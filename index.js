@@ -120,7 +120,11 @@ async function sendWhatsApp(to, text) {
     }
   );
 }
-
+// Add this before app.listen()
+setInterval(() => {
+  axios.get("https://wab-kt2c.onrender.com/webhook")
+    .catch(() => {}); // silence errors
+}, 10 * 60 * 1000); // every 10 minutes
 // ─── 5. START SERVER ──────────────────────────────────────────────────────────
 app.listen(process.env.PORT, () => {
   console.log(`🚀 Server running on port ${process.env.PORT}`);
