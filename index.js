@@ -1,18 +1,17 @@
 import express from "express";
 import axios from "axios";
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Store conversation history per user (in-memory)
 const conversations = {};
 
-// ─── 1. WEBHOOK VERIFICATION (Meta requires this) ─────────────────────────────
+// ─── 1. WEBHOOK VERIFICATION ──────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -20,7 +19,7 @@ app.get("/webhook", (req, res) => {
 
   if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
     console.log("✅ Webhook verified!");
-    res.status(200).send(challenge); // Must send this back to Meta
+    res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
   }
@@ -28,21 +27,19 @@ app.get("/webhook", (req, res) => {
 
 // ─── 2. RECEIVE MESSAGES ──────────────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // Always respond immediately to Meta
+  res.sendStatus(200);
 
   try {
     const entry = req.body.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
 
-    // Ignore status updates (delivered, read, etc.)
     if (!value?.messages) return;
 
     const message = value.messages[0];
-    const from = message.from; // Sender's phone number
+    const from = message.from;
     const msgType = message.type;
 
-    // Only handle text messages for now
     if (msgType !== "text") {
       await sendWhatsApp(from, "Sorry, I can only handle text messages right now.");
       return;
@@ -51,11 +48,9 @@ app.post("/webhook", async (req, res) => {
     const userText = message.text.body;
     console.log(`📩 From ${from}: ${userText}`);
 
-    // Get AI reply
-    const aiReply = await getClaudeReply(from, userText);
-    console.log(`🤖 Claude: ${aiReply}`);
+    const aiReply = await getGroqReply(from, userText);
+    console.log(`🤖 Groq: ${aiReply}`);
 
-    // Send reply back via WhatsApp
     await sendWhatsApp(from, aiReply);
 
   } catch (err) {
@@ -63,37 +58,38 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ─── 3. CLAUDE AI WITH MEMORY ─────────────────────────────────────────────────
-async function getClaudeReply(userId, userMessage) {
-  // Initialize conversation history for new users
+// ─── 3. GROQ AI WITH MEMORY ───────────────────────────────────────────────────
+async function getGroqReply(userId, userMessage) {
   if (!conversations[userId]) {
     conversations[userId] = [];
   }
 
-  // Add user message to history
   conversations[userId].push({
     role: "user",
     content: userMessage,
   });
 
-  // Keep only last 20 messages to avoid token overflow
   if (conversations[userId].length > 20) {
     conversations[userId] = conversations[userId].slice(-20);
   }
 
-  const response = await claude.messages.create({
-    model: "claude-sonnet-4-20250514",
+  const response = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile", // Free & fast
     max_tokens: 1024,
-    system: `You are a helpful AI assistant on WhatsApp. 
+    messages: [
+      {
+        role: "system",
+        content: `You are a helpful AI assistant on WhatsApp.
 Keep your replies concise and conversational — this is a chat app.
 Avoid long bullet lists unless really necessary.
 Today's date: ${new Date().toDateString()}`,
-    messages: conversations[userId],
+      },
+      ...conversations[userId],
+    ],
   });
 
-  const assistantReply = response.content[0].text;
+  const assistantReply = response.choices[0].message.content;
 
-  // Save assistant reply to history
   conversations[userId].push({
     role: "assistant",
     content: assistantReply,
@@ -120,12 +116,13 @@ async function sendWhatsApp(to, text) {
     }
   );
 }
-// Add this before app.listen()
+
+// ─── 5. KEEP ALIVE ────────────────────────────────────────────────────────────
 setInterval(() => {
-  axios.get("https://wab-kt2c.onrender.com/webhook")
-    .catch(() => {}); // silence errors
-}, 10 * 60 * 1000); // every 10 minutes
-// ─── 5. START SERVER ──────────────────────────────────────────────────────────
+  axios.get("https://wab-kt2c.onrender.com/webhook").catch(() => {});
+}, 10 * 60 * 1000);
+
+// ─── 6. START SERVER ──────────────────────────────────────────────────────────
 app.listen(process.env.PORT, () => {
   console.log(`🚀 Server running on port ${process.env.PORT}`);
 });
